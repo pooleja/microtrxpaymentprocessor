@@ -5,6 +5,7 @@ var paymentSchema = mongoose.Schema({
 
    clientAddress: {type: String, required: true},
    paymentAddress: {type: String, required: true, unique: true},
+   amountRequested : Number,
    amountReceived: Number,
    keyId: Number
 });

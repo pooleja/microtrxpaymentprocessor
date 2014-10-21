@@ -1,5 +1,8 @@
 var request = require('request');
 
+var PaymentsService = require('./service/paymentsService.js');
+var paymentSvc = new PaymentsService();
+
 // Setup the mongodb connection
 var mongoose = require('mongoose');
 mongoose.connect('mongodb://localhost/microtrxgateway');
@@ -47,6 +50,12 @@ socket.on(transactionEvent, function(data) {
      }
 
      body.vout.map( function(vout) {
+
+      if(!vout.scriptPubKey.addresses){
+        console.log("Failure to find addresses in vout, so skipping " + body.txid);
+        return;
+      }
+
       vout.scriptPubKey.addresses.map(function(address){
 
          lock.readLock(function (readRelease) {
@@ -96,8 +105,24 @@ socket.on(transactionEvent, function(data) {
                        }
 
                         // Build a transaction with all inputs going to clientAddress
-                        var totalValue =  getUnspentTotals(unspents);
-                        totalValue = totalValue - Env.DEFAULT_FEE;
+                        var rawValue =  paymentSvc.getUnspentTotals(unspents);
+                        var totalValue = rawValue - Env.DEFAULT_FEE;
+
+                        // Check to see if the requested payment has been received yet
+                        if(rawValue < writePayment.amountRequested || totalValue <= 0){
+                          console.log("Only partial payment received for : " + address  + " with unspents of " + rawValue + " and requested amount " + writePayment.amountRequested);
+
+                          // Update the record in the DB with the amount received so far
+                          updatedTotalReceived(writePayment, function(error){
+                              if(error)
+                                console.log(error);
+
+                              writeRelease();
+                              return;
+                           });
+
+                          return;
+                        }
 
                         var trxOpts = {
                            fee: Env.DEFAULT_FEE,
@@ -130,24 +155,12 @@ socket.on(transactionEvent, function(data) {
                               return;
                            }
 
-                           // Grab the total received to this address from insight since multiple payments might have been made
-                           var totalReceivedUrl = Env.INSIGHT_URL + "/api/addr/" + address;
-                           request({url: totalReceivedUrl, json: true}, function (error, response, addrInfo) {
-
-                              if (error || response.statusCode != 200) {
-                                  console.log("Error getting total received transactions for : " + address);
-                                  writeRelease();
-                                  return;
-                                }
-
-                              // Update the record in the db with total sent to paymentAddress
-                              writePayment.amountReceived = parseFloat(addrInfo.unconfirmedBalance);
-                              writePayment.save(function(err, payment){
-                                 if(err)
-                                    console.log("Failed to save the payment object after sending transaction");
-                              });
-
+                           // Update the DB with the amount received
+                           updatedTotalReceived(writePayment, function(error){
+                              if(error)
+                                console.log(error);
                            });
+
 
                         });
 
@@ -173,11 +186,23 @@ socket.on(transactionEvent, function(data) {
 
 });
 
-function getUnspentTotals(unspents){
-   var total = 0;
-   unspents.map(function(unspent){
-      total += unspent.amount;
-   });
 
-   return total;
+function updatedTotalReceived(writePayment, callback){
+  // Grab the total received to this address from insight since multiple payments might have been made
+  var totalReceivedUrl = Env.INSIGHT_URL + "/api/addr/" + writePayment.paymentAddress;
+  request({url: totalReceivedUrl, json: true}, function (error, response, addrInfo) {
+
+    if (error || response.statusCode != 200) {
+        callback("Error getting total received transactions for : " + writePayment.paymentAddress);
+        return;
+      }
+
+    // Update the record in the db with total sent to paymentAddress
+    writePayment.amountReceived = parseFloat(addrInfo.unconfirmedBalance) + parseFloat(addrInfo.totalReceived);
+    writePayment.save(function(err, payment){
+       if(err)
+          callback("Failed to save the payment object after sending transaction");
+    });
+
+  });
 }
