@@ -1,24 +1,11 @@
 var request = require('request');
 
-var PaymentsService = require('./service/paymentsService.js');
-var paymentSvc = new PaymentsService();
-
 // Setup the mongodb connection
 var mongoose = require('mongoose');
 mongoose.connect('mongodb://localhost/microtrxgateway');
 var Payment = require('./models/simple/payment.js');
 
 var Env = require('./config/env.js');
-
-var bitcore = require('bitcore');
-var RpcClient = bitcore.RpcClient;
-var rpcConfig = require('./config/rpc.js');
-var rpc = new RpcClient(rpcConfig.config);
-
-var HierarchicalKey = bitcore.HierarchicalKey;
-var Keys = require('./config/keys.js');
-var WalletKey = bitcore.WalletKey;
-var Builder = bitcore.TransactionBuilder;
 
 var ReadWriteLock = require('rwlock');
 var lock = new ReadWriteLock();
@@ -37,7 +24,7 @@ socket.on('connect', function() {
 });
 
 socket.on(transactionEvent, function(data) {
-   console.log("Transaction received.");
+   console.log("Transaction received: " + data.txid);
 
    // use data.txid to look up the transaction
    var url = Env.INSIGHT_URL + "/api/tx/" + data.txid;
@@ -93,79 +80,14 @@ socket.on(transactionEvent, function(data) {
                         return;
                      }
 
-                     // Relay the payment to the target address
+                     // Update the record in the DB with the amount received so far
+                     updatedTotalReceived(writePayment, function(error){
+                         if(error)
+                           console.log(error);
 
-                     // Get unspent outputs from the paymentAddress
-                     var utxoUrl = Env.INSIGHT_URL + "/api/addr/" + address + "/utxo";
-                     request({url: utxoUrl, json: true}, function (error, response, unspents) {
-                        if (error || response.statusCode != 200) {
-                         console.log("Error getting unspent transactions for : " + address);
                          writeRelease();
                          return;
-                       }
-
-                        // Build a transaction with all inputs going to clientAddress
-                        var rawValue =  paymentSvc.getUnspentTotals(unspents);
-                        var totalValue = rawValue - Env.DEFAULT_FEE;
-
-                        // Check to see if the requested payment has been received yet
-                        if(rawValue < writePayment.amountRequested || totalValue <= 0){
-                          console.log("Only partial payment received for : " + address  + " with unspents of " + rawValue + " and requested amount " + writePayment.amountRequested);
-
-                          // Update the record in the DB with the amount received so far
-                          updatedTotalReceived(writePayment, function(error){
-                              if(error)
-                                console.log(error);
-
-                              writeRelease();
-                              return;
-                           });
-
-                          return;
-                        }
-
-                        var trxOpts = {
-                           fee: Env.DEFAULT_FEE,
-                           spendUnconfirmed: true
-                        };
-
-                        var outs = [{
-                            address: currentPayment.clientAddress,
-                            amount: totalValue,
-                          }];
-
-                        var hkey = new HierarchicalKey(Keys.extendedPrivateKeyString);
-                        var newKey = new WalletKey({network: Env.NETWORK});
-                        newKey.privKey = hkey.derive('m/' + currentPayment.keyId).eckey;
-                        var keys = [
-                         newKey
-                        ];
-
-                        var tx = new Builder(trxOpts)
-                         .setUnspent(unspents)
-                         .setOutputs(outs)
-                         .sign(keys)
-                         .build();
-
-                        // Send via RPC in bitcoind
-                        rpc.sendRawTransaction(tx.serialize().toString('hex'), function(err, ret){
-                           if (err) {
-                              console.log("Failed sending transaction from " + address + " to " + currentPayment.clientAddress);
-                              writeRelease();
-                              return;
-                           }
-
-                           // Update the DB with the amount received
-                           updatedTotalReceived(writePayment, function(error){
-                              if(error)
-                                console.log(error);
-                           });
-
-
-                        });
-
-
-                     });
+                      });
 
                    });
 
