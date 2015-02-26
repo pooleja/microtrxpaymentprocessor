@@ -1,11 +1,11 @@
 var request = require('request');
 
+var Env = require('./config/env.js');
+
 // Setup the mongodb connection
 var mongoose = require('mongoose');
-mongoose.connect('mongodb://localhost/microtrxgateway');
+mongoose.connect(Env.MONGO_CONNECTION_STRING);
 var Payment = require('./models/simple/payment.js');
-
-var Env = require('./config/env.js');
 
 var ReadWriteLock = require('rwlock');
 var lock = new ReadWriteLock();
